@@ -282,13 +282,17 @@ async def st_finish(m: types.Message, state: FSMContext):
     if not is_valid_time(m.text): return await m.answer("Формат ЧЧ:ММ!")
     d = await state.get_data()
     async with aiosqlite.connect(DB_NAME) as db:
+        # БЫЛО: INSERT INTO ...
+        # СТАЛО: INSERT OR REPLACE INTO ... (Это разрешит перезапись старых ID)
         await db.execute(
-            "INSERT INTO T3 (student_id, teacher_id, student_name, subject, price_per_hour) VALUES (?,?,?,?,?)",
+            "INSERT OR REPLACE INTO T3 (student_id, teacher_id, student_name, subject, price_per_hour) VALUES (?,?,?,?,?)",
             (d['s_id'], d['t_id'], d['name'], d['subject'], d['price']))
+
+        # Пробное занятие добавляем как и раньше
         await db.execute("INSERT INTO T5 (student_id, lesson_date, lesson_time, type) VALUES (?,?,?,?)",
                          (d['s_id'], d['trial_date'], m.text, "trial"))
         await db.commit()
-    await m.answer("✅ Ученик создан!", reply_markup=main_menu_kb())
+    await m.answer("✅ Ученик создан (или обновлен)!", reply_markup=main_menu_kb())
     await state.clear()
 
 
