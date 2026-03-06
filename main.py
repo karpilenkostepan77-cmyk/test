@@ -109,6 +109,7 @@ class MoneyStates(StatesGroup):
     waiting_for_hours = State()
     expense_amount = State()
     expense_reason = State()
+    manual_amount = State()
 
 
 class LessonStates(StatesGroup):
@@ -716,12 +717,38 @@ async def money_menu(c: types.CallbackQuery):
     cash, debt, tax = r1[0] or 0, r2[0] or 0, r3[0] or 0
     profit = cash - debt - tax
     txt = f"💰 Касса: {cash:.2f}\n⏳ Долг преподам: {debt:.2f}\n🏛 Налог: {tax:.2f}\n🏦 Чистые: {profit:.2f}"
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📈 Доход", callback_data="inc_start")],
-        [InlineKeyboardButton(text="📉 Расход", callback_data="exp_start")],
+        [InlineKeyboardButton(text="📈 Доход (Урок)", callback_data="inc_start")],
+        [InlineKeyboardButton(text="📉 Расход (С причиной)", callback_data="exp_start")],
+        [InlineKeyboardButton(text="💵 Ручная операция (+/-)", callback_data="manual_bank")],  # <--- НОВАЯ КНОПКА
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
     ])
     await c.message.edit_text(txt, reply_markup=kb)
+
+
+@dp.callback_query(F.data == "manual_bank")
+async def manual_bank_start(c: types.CallbackQuery, state: FSMContext):
+    await c.message.edit_text(
+        "Введите сумму (число).\n\n• Чтобы добавить: просто число (напр. 5000)\n• Чтобы убавить: число с минусом (напр. -1500)")
+    await state.set_state(MoneyStates.manual_amount)
+
+
+@dp.message(MoneyStates.manual_amount)
+async def manual_bank_save(m: types.Message, state: FSMContext):
+    try:
+        amt = float(m.text)
+    except ValueError:
+        return await m.answer("Ошибка! Введите число.")
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Пишем в T1 без доли учителя и без налога, описание "Ручная операция"
+        await db.execute("INSERT INTO T1 (student_id, amount, teacher_share, tax, description) VALUES (0,?,0,0,?)",
+                         (amt, "Ручная операция"))
+        await db.commit()
+
+    await m.answer(f"✅ Баланс изменен на {amt}", reply_markup=main_menu_kb())
+    await state.clear()
 
 
 @dp.callback_query(F.data == "inc_start")
