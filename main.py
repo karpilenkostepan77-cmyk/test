@@ -111,6 +111,8 @@ class MoneyStates(StatesGroup):
     expense_reason = State()
     manual_amount = State()
 
+class TeacherEditStates(StatesGroup):
+    waiting_for_balance = State()
 
 class LessonStates(StatesGroup):
     waiting_for_category = State()
@@ -935,11 +937,41 @@ async def teach_view(c: types.CallbackQuery):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💸 Выплатить все", callback_data=f"pay_{tid}_{bal}")],
+        [InlineKeyboardButton(text="✏️ Изменить долг", callback_data=f"edit_tbal_{tid}")],  # <--- ВСТАВИТЬ ЭТУ СТРОКУ
         [InlineKeyboardButton(text="❌ Удалить", callback_data=f"del_t_{tid}")],
         [InlineKeyboardButton(text="Назад", callback_data="menu_teachers")]
     ])
     await c.message.edit_text(info_txt, reply_markup=kb)
 
+
+# --- РУЧНОЕ РЕДАКТИРОВАНИЕ ДОЛГА ПРЕПОДАВАТЕЛЮ ---
+
+@dp.callback_query(F.data.startswith("edit_tbal_"))
+async def edit_teacher_balance_start(c: types.CallbackQuery, state: FSMContext):
+    tid = int(c.data.split("_")[2])
+    await state.update_data(tid=tid)
+
+    await c.message.edit_text("Введите новую сумму долга преподавателю (число):")
+    await state.set_state(TeacherEditStates.waiting_for_balance)
+
+
+@dp.message(TeacherEditStates.waiting_for_balance)
+async def edit_teacher_balance_finish(m: types.Message, state: FSMContext):
+    try:
+        new_balance = float(m.text)
+    except ValueError:
+        return await m.answer("Ошибка! Введите число.")
+
+    d = await state.get_data()
+    tid = d['tid']
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Обновляем долг в таблице T4
+        await db.execute("UPDATE T4 SET teacher_earnings = ? WHERE teacher_id = ?", (new_balance, tid))
+        await db.commit()
+
+    await m.answer(f"✅ Баланс (долг) преподавателя успешно изменен на {new_balance} руб.", reply_markup=main_menu_kb())
+    await state.clear()
 
 @dp.callback_query(F.data.startswith("del_t_"))
 async def teach_del(c: types.CallbackQuery):
