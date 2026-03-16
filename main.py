@@ -145,7 +145,8 @@ async def get_students_keyboard(callback_prefix: str):
         builder.button(text="Список пуст", callback_data="ignore")
     else:
         for s_id, s_name in students:
-            builder.button(text=f"{s_name}", callback_data=f"{callback_prefix}_{s_id}")
+            # ВОТ ТУТ ВЕРНУЛ ID НА КНОПКУ:
+            builder.button(text=f"{s_name} (ID: {s_id})", callback_data=f"{callback_prefix}_{s_id}")
     builder.adjust(1)
     builder.row(InlineKeyboardButton(text="⬅️ Отмена", callback_data="back_main"))
     return builder.as_markup()
@@ -811,7 +812,7 @@ async def inc_id(c: types.CallbackQuery, state: FSMContext):
          InlineKeyboardButton(text="1.5 часа", callback_data="hours_1.5"),
          InlineKeyboardButton(text="2 часа", callback_data="hours_2.0")]
     ])
-    await c.message.edit_text(f"Ученик: {name}\nК оплате: {price_st}/час\nДлительность?", reply_markup=kb)
+    await c.message.edit_text(f"Ученик: {name} (ID: {sid})\nК оплате: {price_st}/час\nДлительность?", reply_markup=kb)
 
 
 @dp.callback_query(F.data.startswith("hours_"))
