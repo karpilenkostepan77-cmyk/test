@@ -110,6 +110,7 @@ class MoneyStates(StatesGroup):
     expense_amount = State()
     expense_reason = State()
     manual_amount = State()
+    manual_tax = State()
 
 class TeacherEditStates(StatesGroup):
     waiting_for_balance = State()
@@ -432,13 +433,12 @@ async def show_week(c: types.CallbackQuery):
     async with aiosqlite.connect(DB_NAME) as db:
         # --- ИЗМЕНЕНИЕ: JOIN с таблицей T7, чтобы получить имя учителя ---
         async with db.execute("""
-                              SELECT T3.student_id, T3.student_name, T7.name
-                              FROM T3
-                                       LEFT JOIN T7 ON T3.teacher_id = T7.id
-                              """) as cur:
-            # Словарь теперь хранит кортеж: {id: ("Имя Ученика", "Имя Препода")}
+            SELECT T3.student_id, T3.student_name, T7.name 
+            FROM T3 LEFT JOIN T7 ON T3.teacher_id = T7.id
+        """) as cur:
             rows = await cur.fetchall()
-            studs = {r[0]: (r[1], r[2] if r[2] else "Неизвестно") for r in rows}
+            # ЗАМЕНИ формирование studs на это:
+            studs = {r[0]: (f"{r[1]} (ID: {r[0]})", r[2] if r[2] else "Неизвестно") for r in rows}
 
         async with db.execute("SELECT student_id, day_of_week, lesson_time FROM T2") as cur:
             regs = await cur.fetchall()
@@ -487,9 +487,9 @@ async def show_week(c: types.CallbackQuery):
 @dp.callback_query(F.data == "show_reg")
 async def show_reg(c: types.CallbackQuery):
     async with aiosqlite.connect(DB_NAME) as db:
-        # --- ИЗМЕНЕНИЕ: Тоже делаем JOIN с T7 ---
+        # ДОБАВЛЕНО T3.student_id в SELECT
         async with db.execute("""
-                              SELECT T3.student_name, T7.name, T2.day_of_week, T2.lesson_time
+                              SELECT T3.student_id, T3.student_name, T7.name, T2.day_of_week, T2.lesson_time
                               FROM T2
                                        JOIN T3 ON T2.student_id = T3.student_id
                                        LEFT JOIN T7 ON T3.teacher_id = T7.id
@@ -497,12 +497,14 @@ async def show_reg(c: types.CallbackQuery):
             rows = await cur.fetchall()
 
     # Сортировка по дням недели
-    rows.sort(key=lambda x: (WEEKDAYS_MAP.get(x[2], 99), x[3]))
+    rows.sort(key=lambda x: (WEEKDAYS_MAP.get(x[3], 99), x[4]))
 
     txt = "♾ <b>ПОСТОЯННОЕ РАСПИСАНИЕ:</b>\n"
-    for s_name, t_name, day, time in rows:
+    # Распаковываем 5 переменных
+    for s_id, s_name, t_name, day, time in rows:
         t_name = t_name if t_name else "?"
-        txt += f"• {day} {time} — {s_name} ({t_name})\n"
+        # Выводим с ID
+        txt += f"• {day} {time} — {s_name} (ID: {s_id}) ({t_name})\n"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="menu_lessons")]])
     await c.message.edit_text(txt, reply_markup=kb, parse_mode="HTML")
@@ -725,12 +727,37 @@ async def money_menu(c: types.CallbackQuery):
     txt = f"💰 Касса: {cash:.2f}\n⏳ Долг преподам: {debt:.2f}\n🏛 Налог: {tax:.2f}\n🏦 Чистые: {profit:.2f}"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📈 Доход (Урок)", callback_data="inc_start")],
-        [InlineKeyboardButton(text="📉 Расход (С причиной)", callback_data="exp_start")],
-        [InlineKeyboardButton(text="💵 Ручная операция (+/-)", callback_data="manual_bank")],  # <--- НОВАЯ КНОПКА
+        [InlineKeyboardButton(text="📈 Доход", callback_data="inc_start")],
+        [InlineKeyboardButton(text="📉 Расход", callback_data="exp_start")],
+        [InlineKeyboardButton(text="💵 Ручная операция (+/-)", callback_data="manual_bank")],
+        [InlineKeyboardButton(text="🏛 Изменить налог (+/-)", callback_data="manual_tax")],  # <--- НОВАЯ КНОПКА
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
     ])
     await c.message.edit_text(txt, reply_markup=kb)
+
+
+@dp.callback_query(F.data == "manual_tax")
+async def manual_tax_start(c: types.CallbackQuery, state: FSMContext):
+    await c.message.edit_text(
+        "Введите сумму для корректировки налога (число).\n\n• Добавить долг по налогу: просто число\n• Списать налог (например, после уплаты ФНС): число с минусом (напр. -1500)")
+    await state.set_state(MoneyStates.manual_tax)
+
+
+@dp.message(MoneyStates.manual_tax)
+async def manual_tax_save(m: types.Message, state: FSMContext):
+    try:
+        tax_val = float(m.text)
+    except ValueError:
+        return await m.answer("Ошибка! Введите число.")
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Записываем операцию только с налогом (amount=0, teacher_share=0)
+        await db.execute("INSERT INTO T1 (student_id, amount, teacher_share, tax, description) VALUES (0, 0, 0, ?, ?)",
+                         (tax_val, "Ручная корректировка налога"))
+        await db.commit()
+
+    await m.answer(f"✅ Налог скорректирован на {tax_val} руб.", reply_markup=main_menu_kb())
+    await state.clear()
 
 
 @dp.callback_query(F.data == "manual_bank")
