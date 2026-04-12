@@ -5,27 +5,101 @@ import sys
 from datetime import datetime, timedelta
 
 import aiosqlite
+import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.bot import DefaultBotProperties
+from aiohttp_socks import ProxyConnector
 
-# --- КОНФИГУРАЦИЯ ---
-TOKEN = "8510728793:AAEoiqcz1C6aQaACXbI-5V_yAt7KJ4DitwQ"  # <--- ВСТАВЬ ТОКЕН
-DB_NAME = "school_bot_v5.db"  # V5 - новая версия с именами преподов
+TOKEN = "8510728793:AAEoiqcz1C6aQaACXbI-5V_yAt7KJ4DitwQ"
+DB_NAME = "school_bot_v5.db"
+PROXY_URL = "socks5://104.248.203.234:1080"
+USE_PROXY = True
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
-# --- КОНСТАНТЫ ---
 WEEKDAYS = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"]
 WEEKDAYS_MAP = {day: i for i, day in enumerate(WEEKDAYS)}
 
 
-# --- ХЕЛПЕРЫ ---
+
+
+class StudentStates(StatesGroup):
+    waiting_for_id = State()
+    waiting_for_teacher_id = State()
+    waiting_for_name = State()
+    waiting_for_subject = State()
+    waiting_for_price = State()
+    waiting_for_trial_date = State()
+    waiting_for_trial_time = State()
+
+class StudentEditStates(StatesGroup):
+    waiting_for_field = State()
+    waiting_for_value = State()
+
+class MoneyStates(StatesGroup):
+    waiting_for_hours = State()
+    expense_amount = State()
+    expense_reason = State()
+    manual_amount = State()
+    manual_tax = State()
+
+class TeacherEditStates(StatesGroup):
+    waiting_for_balance = State()
+
+class LessonStates(StatesGroup):
+    waiting_for_category = State()
+    waiting_for_type = State()
+    waiting_for_day = State()
+    waiting_for_time = State()
+
+class TeacherAddStates(StatesGroup):
+    waiting_for_new_id = State()
+    waiting_for_name = State()
+    waiting_for_rate = State()
+
+class LessonMoveStates(StatesGroup):
+    waiting_for_mode = State()
+    waiting_for_new_day = State()
+    waiting_for_new_time = State()
+
+
+async def init_db():
+    async with aiosqlite.connect(DB_NAME) as db:
+        # T1: Финансы (Лог операций)
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS T1 (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, amount REAL, teacher_share REAL, tax REAL, description TEXT)")
+        # T2: Постоянное расписание
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS T2 (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, day_of_week TEXT, lesson_time TEXT)")
+        # T3: Ученики
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS T3 (student_id INTEGER PRIMARY KEY, teacher_id INTEGER, student_name TEXT, subject TEXT, price_per_hour REAL)")
+        # T4: Баланс преподавателей (Кошелек)
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS T4 (teacher_id INTEGER PRIMARY KEY, teacher_earnings REAL DEFAULT 0)")
+        # T5: Разовые занятия
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS T5 (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, lesson_date TEXT, lesson_time TEXT, type TEXT)")
+        # T6: Отмены/Переносы постоянных
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS T6 (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, date_to_skip TEXT)")
+
+        # --- NEW: T7 - Информация о преподавателях ---
+        # id (вручную вводим), name (Имя), rate (Ставка за час)
+        await db.execute("CREATE TABLE IF NOT EXISTS T7 (id INTEGER PRIMARY KEY, name TEXT, rate REAL)")
+
+        await db.commit()
+
+
+
+
 def get_current_week_dates():
-    """Возвращает даты текущей недели"""
     today = datetime.now()
     start_of_week = today - timedelta(days=today.weekday())  # Понедельник
     start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -62,124 +136,42 @@ def is_valid_date(date_str):
     return bool(re.match(r'^\d{1,2}\.\d{1,2}$', date_str))
 
 
-# --- DB INIT ---
-async def init_db():
-    async with aiosqlite.connect(DB_NAME) as db:
-        # T1: Финансы (Лог операций)
-        await db.execute(
-            "CREATE TABLE IF NOT EXISTS T1 (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, amount REAL, teacher_share REAL, tax REAL, description TEXT)")
-        # T2: Постоянное расписание
-        await db.execute(
-            "CREATE TABLE IF NOT EXISTS T2 (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, day_of_week TEXT, lesson_time TEXT)")
-        # T3: Ученики
-        await db.execute(
-            "CREATE TABLE IF NOT EXISTS T3 (student_id INTEGER PRIMARY KEY, teacher_id INTEGER, student_name TEXT, subject TEXT, price_per_hour REAL)")
-        # T4: Баланс преподавателей (Кошелек)
-        await db.execute(
-            "CREATE TABLE IF NOT EXISTS T4 (teacher_id INTEGER PRIMARY KEY, teacher_earnings REAL DEFAULT 0)")
-        # T5: Разовые занятия
-        await db.execute(
-            "CREATE TABLE IF NOT EXISTS T5 (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, lesson_date TEXT, lesson_time TEXT, type TEXT)")
-        # T6: Отмены/Переносы постоянных
-        await db.execute(
-            "CREATE TABLE IF NOT EXISTS T6 (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, date_to_skip TEXT)")
-
-        # --- NEW: T7 - Информация о преподавателях ---
-        # id (вручную вводим), name (Имя), rate (Ставка за час)
-        await db.execute("CREATE TABLE IF NOT EXISTS T7 (id INTEGER PRIMARY KEY, name TEXT, rate REAL)")
-
-        await db.commit()
-
-
-# --- STATES ---
-class StudentStates(StatesGroup):
-    waiting_for_id = State()
-    waiting_for_teacher_id = State()
-    waiting_for_name = State()
-    waiting_for_subject = State()
-    waiting_for_price = State()
-    waiting_for_trial_date = State()
-    waiting_for_trial_time = State()
-
-class StudentEditStates(StatesGroup):
-    waiting_for_field = State()  # Ждем выбора поля
-    waiting_for_value = State()  # Ждем ввода нового значения (текст/цифра)
-
-class MoneyStates(StatesGroup):
-    waiting_for_hours = State()
-    expense_amount = State()
-    expense_reason = State()
-    manual_amount = State()
-    manual_tax = State()
-
-class TeacherEditStates(StatesGroup):
-    waiting_for_balance = State()
-
-class LessonStates(StatesGroup):
-    waiting_for_category = State()
-    waiting_for_type = State()
-    waiting_for_day = State()
-    waiting_for_time = State()
-
-
-# Обновленный стейт для добавления препода
-class TeacherAddStates(StatesGroup):
-    waiting_for_new_id = State()
-    waiting_for_name = State()
-    waiting_for_rate = State()
-
-
-class LessonMoveStates(StatesGroup):
-    waiting_for_mode = State()
-    waiting_for_new_day = State()
-    waiting_for_new_time = State()
-
-
-# --- КЛАВИАТУРЫ ---
-async def get_students_keyboard(callback_prefix: str):
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT student_id, student_name FROM T3") as cursor:
-            students = await cursor.fetchall()
-    builder = InlineKeyboardBuilder()
-    if not students:
-        builder.button(text="Список пуст", callback_data="ignore")
+# async def create_bot():
+#     # Настройки таймаута (60 секунд — это разумно)
+#     timeout = aiohttp.ClientTimeout(total=60)
+#
+#     if USE_PROXY:
+#         # Для прокси создаем специальный коннектор
+#         connector = ProxyConnector.from_url(PROXY_URL)
+#         # Создаем базовую сессию aiohttp с этим коннектором
+#         client_session = aiohttp.ClientSession(connector=connector, timeout=timeout)
+#         # Передаем эту сессию в aiogram
+#         session = AiohttpSession(proxy=PROXY_URL)
+#     else:
+#         session = AiohttpSession()
+#
+#     bot = Bot(
+#         token=TOKEN,
+#         session=session,
+#         default=DefaultBotProperties(parse_mode="HTML")
+#     )
+#     return bot
+async def create_bot():
+    # В aiogram 3.x прокси передается максимально просто.
+    # Библиотека сама создаст нужный коннектор внутри сессии.
+    if USE_PROXY:
+        session = AiohttpSession(proxy=PROXY_URL)
     else:
-        for s_id, s_name in students:
-            # ВОТ ТУТ ВЕРНУЛ ID НА КНОПКУ:
-            builder.button(text=f"{s_name} (ID: {s_id})", callback_data=f"{callback_prefix}_{s_id}")
-    builder.adjust(1)
-    builder.row(InlineKeyboardButton(text="⬅️ Отмена", callback_data="back_main"))
-    return builder.as_markup()
+        session = AiohttpSession()
 
+    bot = Bot(
+        token=TOKEN,
+        session=session,
+        default=DefaultBotProperties(parse_mode="HTML")
+    )
+    return bot
 
-async def get_teachers_keyboard_select(callback_prefix: str):
-    """Клавиатура с ИМЕНАМИ преподавателей (берем из T7)"""
-    async with aiosqlite.connect(DB_NAME) as db:
-        # Берем ID и Имя из T7
-        async with db.execute("SELECT id, name FROM T7") as cursor:
-            teachers = await cursor.fetchall()
-
-    builder = InlineKeyboardBuilder()
-    if not teachers:
-        return None
-
-    for t_id, t_name in teachers:
-        # Отображаем Имя
-        builder.button(text=f"{t_name}", callback_data=f"{callback_prefix}_{t_id}")
-    builder.adjust(2)
-    return builder.as_markup()
-
-
-def main_menu_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📅 РАСПИСАНИЕ", callback_data="menu_lessons")],
-        [InlineKeyboardButton(text="💰 ДЕНЬГИ", callback_data="menu_money")],
-        [InlineKeyboardButton(text="🎓 УЧЕНИКИ", callback_data="menu_students")],
-        [InlineKeyboardButton(text="👨‍🏫 ПРЕПОДЫ", callback_data="menu_teachers")]
-    ])
-
-
-bot = Bot(token=TOKEN)
+bot = None
 dp = Dispatcher()
 
 
@@ -198,6 +190,48 @@ async def back_main(c: types.CallbackQuery, state: FSMContext):
 # =====================================================================
 # УЧЕНИКИ
 # =====================================================================
+
+def main_menu_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 РАСПИСАНИЕ", callback_data="menu_lessons")],
+        [InlineKeyboardButton(text="💰 ДЕНЬГИ", callback_data="menu_money")],
+        [InlineKeyboardButton(text="🎓 УЧЕНИКИ", callback_data="menu_students")],
+        [InlineKeyboardButton(text="👨‍🏫 ПРЕПОДЫ", callback_data="menu_teachers")]
+    ])
+
+async def get_students_keyboard(callback_prefix: str):
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT student_id, student_name FROM T3") as cursor:
+            students = await cursor.fetchall()
+    builder = InlineKeyboardBuilder()
+    if not students:
+        builder.button(text="Список пуст", callback_data="ignore")
+    else:
+        for s_id, s_name in students:
+            # ВОТ ТУТ ВЕРНУЛ ID НА КНОПКУ:
+            builder.button(text=f"{s_name} (ID: {s_id})", callback_data=f"{callback_prefix}_{s_id}")
+    builder.adjust(1)
+    builder.row(InlineKeyboardButton(text="⬅️ Отмена", callback_data="back_main"))
+    return builder.as_markup()
+
+async def get_teachers_keyboard_select(callback_prefix: str):
+    """Клавиатура с ИМЕНАМИ преподавателей (берем из T7)"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Берем ID и Имя из T7
+        async with db.execute("SELECT id, name FROM T7") as cursor:
+            teachers = await cursor.fetchall()
+
+    builder = InlineKeyboardBuilder()
+    if not teachers:
+        return None
+
+    for t_id, t_name in teachers:
+
+        builder.button(text=f"{t_name}", callback_data=f"{callback_prefix}_{t_id}")
+    builder.adjust(2)
+    return builder.as_markup()
+
+
 @dp.callback_query(F.data == "menu_students")
 async def students_menu(c: types.CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1032,17 +1066,33 @@ async def teach_pay(c: types.CallbackQuery):
 
 
 async def main():
+    global bot
+    bot = await create_bot()
+
     await init_db()
 
     try:
-        await bot.delete_webhook(drop_pending_updates=True)
+        for i in range(3):
+            try:
+                await bot.delete_webhook(drop_pending_updates=True)
+                break
+            except Exception as e:
+                if i == 2:
+                    raise
+                print(f"Попытка {i + 1} не удалась: {e}")
+                await asyncio.sleep(5)
+
         print("BOT STARTED V5...")
         await dp.start_polling(bot)
     except Exception as e:
         print(f"Ошибка: {e}")
     finally:
+        # Правильно закрываем сессию
         await bot.session.close()
         await bot.close()
+
+        # Дополнительная очистка
+        await asyncio.sleep(0.5)
 
 
 if __name__ == "__main__":
@@ -1050,3 +1100,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\nБот остановлен")
+    finally:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
