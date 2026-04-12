@@ -18,7 +18,7 @@ from aiohttp_socks import ProxyConnector
 
 TOKEN = "8510728793:AAEoiqcz1C6aQaACXbI-5V_yAt7KJ4DitwQ"
 DB_NAME = "school_bot_v5.db"
-PROXY_URL = "socks5://104.248.203.234:1080"
+PROXY_URL = "socks5://64.227.131.240:1080"
 USE_PROXY = True
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
