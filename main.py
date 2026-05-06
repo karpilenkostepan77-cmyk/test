@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 import aiosqlite
 import aiohttp
+from aiohttp import BasicAuth
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -22,7 +23,7 @@ DB_NAME = "school_bot_v5.db"
 PROXY_LIST = [
     "http://aJ8CPG:Jb9bYk@213.139.222.82:9125"
 ]
-USE_PROXY = True
+USE_PROXY = False
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
@@ -184,15 +185,25 @@ async def get_best_proxy(proxies):
 
 async def create_bot():
     active_proxy = None
-
     if USE_PROXY:
         active_proxy = await get_best_proxy(PROXY_LIST)
-        if active_proxy:
-            print(f"Выбран лучший прокси: {active_proxy}")
+
+    if active_proxy:
+        print(f"🚀 Используем: {active_proxy}")
+
+        # Разрезаем строку, чтобы вытащить логин и пароль
+        # Формат: http://login:pass@ip:port
+        try:
+            auth_part = active_proxy.split('@')[0].replace('http://', '')
+            proxy_url = 'http://' + active_proxy.split('@')[1]
+            login, password = auth_part.split(':')
+
+            # Создаем объект авторизации
+            auth = BasicAuth(login, password)
+            session = AiohttpSession(proxy=proxy_url, proxy_auth=auth)
+        except Exception as e:
+            print(f"⚠️ Ошибка разбора прокси: {e}. Пробуем напрямую.")
             session = AiohttpSession(proxy=active_proxy)
-        else:
-            print("Ни один прокси не ответил. Пробуем без них.")
-            session = AiohttpSession()
     else:
         session = AiohttpSession()
 
@@ -202,7 +213,6 @@ async def create_bot():
         default=DefaultBotProperties(parse_mode="HTML")
     )
     return bot
-
 # async def create_bot():
 #     # В aiogram 3.x прокси передается максимально просто.
 #     # Библиотека сама создаст нужный коннектор внутри сессии.
