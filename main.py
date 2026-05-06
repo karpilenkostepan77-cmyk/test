@@ -18,7 +18,10 @@ from aiohttp_socks import ProxyConnector
 
 TOKEN = "8510728793:AAEoiqcz1C6aQaACXbI-5V_yAt7KJ4DitwQ"
 DB_NAME = "school_bot_v5.db"
-PROXY_URL = "socks5://64.227.131.240:1080"
+
+PROXY_LIST = [
+    "http://aJ8CPG:Jb9bYk@213.139.222.82:9125"
+]
 USE_PROXY = True
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
@@ -156,11 +159,40 @@ def is_valid_date(date_str):
 #         default=DefaultBotProperties(parse_mode="HTML")
 #     )
 #     return bot
+
+async def get_best_proxy(proxies):
+    best_proxy = None
+    min_ping = float('inf')
+
+    print("Тестируем прокси...")
+    async with aiohttp.ClientSession() as session:
+        for proxy in proxies:
+            try:
+                start_time = asyncio.get_event_loop().time()
+                async with session.get("http://google.com", proxy=proxy, timeout=10) as response:
+                    if response.status == 200:
+                        ping = asyncio.get_event_loop().time() - start_time
+                        print(f"{proxy} | Пинг: {ping:.3f}с")
+                        if ping < min_ping:
+                            min_ping = ping
+                            best_proxy = proxy
+            except Exception:
+                print(f"{proxy} | Не доступен")
+                continue
+    return best_proxy
+
+
 async def create_bot():
-    # В aiogram 3.x прокси передается максимально просто.
-    # Библиотека сама создаст нужный коннектор внутри сессии.
+    active_proxy = None
+
     if USE_PROXY:
-        session = AiohttpSession(proxy=PROXY_URL)
+        active_proxy = await get_best_proxy(PROXY_LIST)
+        if active_proxy:
+            print(f"Выбран лучший прокси: {active_proxy}")
+            session = AiohttpSession(proxy=active_proxy)
+        else:
+            print("Ни один прокси не ответил. Пробуем без них.")
+            session = AiohttpSession()
     else:
         session = AiohttpSession()
 
@@ -171,6 +203,21 @@ async def create_bot():
     )
     return bot
 
+# async def create_bot():
+#     # В aiogram 3.x прокси передается максимально просто.
+#     # Библиотека сама создаст нужный коннектор внутри сессии.
+#     if USE_PROXY:
+#         session = AiohttpSession(proxy=PROXY_URL)
+#     else:
+#         session = AiohttpSession()
+#
+#     bot = Bot(
+#         token=TOKEN,
+#         session=session,
+#         default=DefaultBotProperties(parse_mode="HTML")
+#     )
+#     return bot
+#
 bot = None
 dp = Dispatcher()
 
@@ -1103,4 +1150,3 @@ if __name__ == "__main__":
     finally:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-
